@@ -4,12 +4,12 @@ import json
 import random
 import datetime
 
-@register("impartpro", "w33d", "牛牛小游戏", "1.0.0", "https://github.com/Last-emo-boy/astrbot_plugin_impartpro")
+@register("impartpro", "YourName", "牛牛类小游戏插件", "1.0.0", "repo url")
 class ImpartProPlugin(Star):
-    def __init__(self, context: Context, config: dict):
+    def __init__(self, context: Context, config: dict = None):
         super().__init__(context)
-        self.config = config
-        # 存储文件位于当前文件同级目录
+        self.config = config if config is not None else {}
+        # 存储文件位于当前文件同级目录，文件名为 "impartpro_data.json"
         self.storage_file = os.path.join(os.path.dirname(__file__), "impartpro_data.json")
         self.data = self.load_data()
 
@@ -48,53 +48,36 @@ class ImpartProPlugin(Star):
         self.data[userid] = record
         self.save_data()
 
-    async def update_channel_id(self, user_id: str, new_channel_id: str) -> list:
-        record = self.get_record(user_id)
+    # 这里所有货币操作也全部采用 JSON 存储，在每个用户记录中使用 "currency" 字段存储货币数
+    async def update_user_currency(self, uid: str, amount: float, currency: str = None) -> str:
+        record = self.get_record(uid)
         if not record:
-            return [new_channel_id]
-        current = record.get("channelId", [])
-        if new_channel_id not in current:
-            current.append(new_channel_id)
-            self.update_record(user_id, {"channelId": current})
-        return current
+            return f"用户 {uid} 不存在。"
+        current_currency = record.get("currency", 0)
+        new_currency = current_currency + amount
+        record["currency"] = new_currency
+        self.update_record(uid, {"currency": new_currency})
+        return f"用户 {uid} 货币更新为 {new_currency}"
+
+    async def get_user_currency(self, uid: str, currency: str = None) -> float:
+        record = self.get_record(uid)
+        if not record:
+            return 0
+        return record.get("currency", 0)
+
+    async def update_id_by_user_id(self, user_id: str, platform: str) -> str:
+        # 直接返回 user_id 作示例
+        return user_id
 
     def logger_info(self, message: str):
         if self.config.get("loggerinfo"):
             self.context.logger.info(message)
 
-    async def update_user_currency(self, uid: str, amount: float, currency: str = None) -> str:
-        try:
-            if currency is None:
-                currency = self.config.get("currency", "default")
-            numeric_uid = int(uid)
-            if amount > 0:
-                await self.context.monetary.gain(numeric_uid, amount, currency)
-                self.logger_info(f"为用户 {uid} 增加了 {amount} {currency}")
-            elif amount < 0:
-                await self.context.monetary.cost(numeric_uid, -amount, currency)
-                self.logger_info(f"为用户 {uid} 减少了 {-amount} {currency}")
-            return f"用户 {uid} 成功更新了 {abs(amount)} {currency}"
-        except Exception as e:
-            self.context.logger.error(f"更新用户 {uid} 的货币时出错: {e}")
-            return f"更新用户 {uid} 的货币时出现问题。"
-
-    async def get_user_currency(self, uid: str, currency: str = None) -> float:
-        try:
-            if currency is None:
-                currency = self.config.get("currency", "default")
-            numeric_uid = int(uid)
-            # 此处仅作示例，直接调用 monetary 模块查询
-            records = await self.context.monetary.get(numeric_uid, currency)
-            if records:
-                return records.get("value", 0)
-            return 0
-        except Exception as e:
-            self.context.logger.error(f"获取用户 {uid} 的货币时出错: {e}")
-            return 0
-
-    async def update_id_by_user_id(self, user_id: str, platform: str) -> str:
-        # 此处直接返回 user_id 作示例
-        return user_id
+    def random_length(self, base: float, variance: float) -> float:
+        """计算随机值，区间为 base ± (base * variance/100)"""
+        min_val = base * (1 - variance / 100)
+        max_val = base * (1 + variance / 100)
+        return random.uniform(min_val, max_val)
 
     # ---------------- 注册命令组 ----------------
     @command_group("impartpro")
@@ -216,6 +199,7 @@ class ImpartProPlugin(Star):
         if not record:
             default_length = self.random_length(*self.config.get("defaultLength", [18, 45]))
             growth_factor = random.random()
+            # 同时初始化货币字段，默认 0
             record = {
                 "userid": user_id,
                 "username": username,
@@ -225,7 +209,8 @@ class ImpartProPlugin(Star):
                 "growthFactor": growth_factor,
                 "lastGrowthTime": now.isoformat(),
                 "lastDuelTime": now.isoformat(),
-                "locked": False
+                "locked": False,
+                "currency": 0
             }
             self.create_record(user_id, record)
             yield event.plain_result(f"@{user_id} 自动初始化成功！你的牛牛初始长度为 {default_length:.2f} cm，生长系数为 {growth_factor:.2f}")
@@ -269,7 +254,6 @@ class ImpartProPlugin(Star):
         self.logger_info(f"计算结果: {original_length:.2f} + {growth_change:.2f} = {enhanced:.2f} cm")
         self.logger_info(f"锻炼结果: {'成功' if is_success else '失败'}")
 
-        # 更新记录
         self.update_record(user_id, {"length": enhanced, "lastGrowthTime": record["lastGrowthTime"],
                                        "channelId": await self.update_channel_id(user_id, event.session_id)})
         yield event.plain_result(f"@{user_id} 锻炼{'成功' if is_success else '失败'}！牛牛强化后长度为 {enhanced:.2f} cm。")
@@ -335,6 +319,7 @@ class ImpartProPlugin(Star):
             defender_record["length"] -= reduction_change
             duel_loss_currency = self.config.get("duelLossCurrency", 80)
             currency_gain = reduction_change * (duel_loss_currency / 100)
+            # 更新决斗失败方的货币（全部使用 JSON 存储）
             await self.update_user_currency(defender_id, currency_gain)
             result_text = "胜利"
         else:
@@ -392,7 +377,8 @@ class ImpartProPlugin(Star):
                 "growthFactor": growth_factor,
                 "lastGrowthTime": now_iso,
                 "lastDuelTime": now_iso,
-                "locked": False
+                "locked": False,
+                "currency": 0
             }
             self.create_record(user_id, record)
             yield event.plain_result(f"牛牛初始化成功，当前长度为 {initial_length:.2f} cm，成长系数为 {growth_factor:.2f}。")
@@ -506,10 +492,3 @@ class ImpartProPlugin(Star):
                 new_status = not current
                 self.update_record(special, {"locked": new_status})
                 yield event.plain_result(f"牛牛大作战已在本频道{'被禁止' if new_status else '开启'}。")
-
-    # ---------------- 辅助函数 ----------------
-    def random_length(self, base: float, variance: float) -> float:
-        """计算随机长度：base ± (base * variance/100)"""
-        min_val = base * (1 - variance / 100)
-        max_val = base * (1 + variance / 100)
-        return random.uniform(min_val, max_val)

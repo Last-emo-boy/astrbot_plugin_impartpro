@@ -48,7 +48,7 @@ class ImpartProPlugin(Star):
         self.data[userid] = record
         self.save_data()
 
-    # 这里所有货币操作也全部采用 JSON 存储，在每个用户记录中使用 "currency" 字段存储货币数
+    # 货币操作全部存储在 JSON 中，每个用户记录中使用 "currency" 字段
     async def update_user_currency(self, uid: str, amount: float, currency: str = None) -> str:
         record = self.get_record(uid)
         if not record:
@@ -79,6 +79,18 @@ class ImpartProPlugin(Star):
         max_val = base * (1 + variance / 100)
         return random.uniform(min_val, max_val)
 
+    # ---------------- 辅助函数：解析 @ 相关 ----------------
+    def parse_at(self, user_str: str) -> str:
+        """
+        解析消息中关于 @ 的格式。
+        如果字符串以 @ 开头，则去掉 @ 并去除左右空白及特殊字符（参考 Gewechat client 实现）。
+        """
+        if user_str.startswith("@"):
+            # 去除 "@" 后再剔除多余空白字符，及特殊的 \u2005 等（如有）
+            user_str = user_str[1:].strip()
+            user_str = user_str.replace('\u2005', '')
+        return user_str
+
     # ---------------- 注册命令组 ----------------
     @command_group("impartpro")
     def impartpro(self):
@@ -97,15 +109,11 @@ class ImpartProPlugin(Star):
         target_username = None
 
         if user:
-            # 要求用户以 @ 开头
-            if user.startswith("@"):
-                target_user_id = user[1:]
-                target_username = target_user_id
-                if target_user_id == event.get_sender_id():
-                    yield event.plain_result("不允许自己注入自己哦~ 换一个用户吧")
-                    return
-            else:
-                yield event.plain_result("输入的用户格式不正确，请使用 @用户 格式。")
+            # 使用 parse_at() 解析 @ 用户格式
+            target_user_id = self.parse_at(user)
+            target_username = target_user_id
+            if target_user_id == event.get_sender_id():
+                yield event.plain_result("不允许自己注入自己哦~ 换一个用户吧")
                 return
         else:
             # 从所有记录中随机选择一个符合条件的用户
@@ -181,16 +189,13 @@ class ImpartProPlugin(Star):
         username = event.get_sender_name()
         now = datetime.datetime.now()
         if user:
-            if user.startswith("@"):
-                target = user[1:]
-                if target == user_id:
-                    yield event.plain_result("不可用的用户！请换一个用户吧~")
-                    return
-                user_id = target
-                username = target
-            else:
-                yield event.plain_result("不可用的用户！请检查输入")
+            # 使用 parse_at() 解析用户参数
+            target = self.parse_at(user)
+            if target == user_id:
+                yield event.plain_result("不可用的用户！请换一个用户吧~")
                 return
+            user_id = target
+            username = target
         else:
             # 更新自己在记录中的用户名
             self.update_record(user_id, {"username": username})
@@ -199,7 +204,6 @@ class ImpartProPlugin(Star):
         if not record:
             default_length = self.random_length(*self.config.get("defaultLength", [18, 45]))
             growth_factor = random.random()
-            # 同时初始化货币字段，默认 0
             record = {
                 "userid": user_id,
                 "username": username,
@@ -265,15 +269,11 @@ class ImpartProPlugin(Star):
         attacker_id = event.get_sender_id()
         now = datetime.datetime.now()
         if user:
-            if user.startswith("@"):
-                target = user[1:]
-                if target == attacker_id:
-                    yield event.plain_result("不可用的用户！请换一个用户吧~")
-                    return
-                defender_id = target
-            else:
-                yield event.plain_result("不可用的用户！请检查输入")
+            target = self.parse_at(user)
+            if target == attacker_id:
+                yield event.plain_result("不可用的用户！请换一个用户吧~")
                 return
+            defender_id = target
         else:
             yield event.plain_result("请指定一个决斗用户！\n示例：决斗 @用户")
             return
@@ -319,7 +319,6 @@ class ImpartProPlugin(Star):
             defender_record["length"] -= reduction_change
             duel_loss_currency = self.config.get("duelLossCurrency", 80)
             currency_gain = reduction_change * (duel_loss_currency / 100)
-            # 更新决斗失败方的货币（全部使用 JSON 存储）
             await self.update_user_currency(defender_id, currency_gain)
             result_text = "胜利"
         else:
@@ -446,12 +445,8 @@ class ImpartProPlugin(Star):
         user_id = event.get_sender_id()
         username = event.get_sender_name()
         if user:
-            if user.startswith("@"):
-                user_id = user[1:]
-                username = user_id
-            else:
-                yield event.plain_result("不可用的用户！请检查输入")
-                return
+            user_id = self.parse_at(user)
+            username = user_id
         record = self.get_record(user_id)
         if not record:
             yield event.plain_result(f"暂时没有@{user_id} 的记录。快输入【重开牛牛】进行初始化吧")
@@ -465,11 +460,7 @@ class ImpartProPlugin(Star):
         '''开启/禁止牛牛大作战'''
         channel_id = event.session_id
         if user:
-            if user.startswith("@"):
-                target_user = user[1:]
-            else:
-                yield event.plain_result("不可用的用户！请检查输入")
-                return
+            target_user = self.parse_at(user)
             record = self.get_record(target_user)
             if not record:
                 rec = {"userid": target_user, "username": target_user, "channelId": [channel_id], "locked": True}
